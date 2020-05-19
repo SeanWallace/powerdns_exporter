@@ -2,19 +2,20 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
+	"github.com/hashicorp/go-retryablehttp"
+	"github.com/mitchellh/mapstructure"
+	"github.com/namsral/flag"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/common/log"
 	"io/ioutil"
-	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
-	"time"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/log"
 )
 
 const (
@@ -24,38 +25,34 @@ const (
 )
 
 var (
-	client = &http.Client{
-		Transport: &http.Transport{
-			Dial: func(netw, addr string) (net.Conn, error) {
-				c, err := net.DialTimeout(netw, addr, 5*time.Second)
-				if err != nil {
-					return nil, err
-				}
-				if err := c.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-					return nil, err
-				}
-				return c, nil
-			},
-		},
-	}
+	httpClient *retryablehttp.Client
+
+	listenAddress = flag.String("listen_address", ":9120",
+		"Address to listen on for web interface and telemetry.")
+	metricsPath   = flag.String("metric_path", "/metrics",
+		"Path under which to expose metrics.")
+	apiURL        = flag.String("api_url", "http://localhost:8001/",
+		"Base-URL of PowerDNS authoritative server/recursor API.")
+	apiKey        = flag.String("api_key", "",
+		"PowerDNS API Key")
 )
 
 // ServerInfo is used to parse JSON data from 'server/localhost' endpoint
 type ServerInfo struct {
-	Kind       string `json:"type"`
-	ID         string `json:"id"`
-	URL        string `json:"url"`
-	DaemonType string `json:"daemon_type"`
-	Version    string `json:"version"`
-	ConfigUrl  string `json:"config_url"`
-	ZonesUrl   string `json:"zones_url"`
+	Kind       string `mapstructure:"kind"`
+	ID         string `mapstructure:"id"`
+	URL        string `mapstructure:"url"`
+	DaemonType string `mapstructure:"daemon_type"`
+	Version    string `mapstructure:"version"`
+	ConfigUrl  string `mapstructure:"config_url"`
+	ZonesUrl   string `mapstructure:"zones_url"`
 }
 
 // StatsEntry is used to parse JSON data from 'server/localhost/statistics' endpoint
 type StatsEntry struct {
 	Name  string  `json:"name"`
 	Kind  string  `json:"type"`
-	Value float64 `json:"value,string"`
+	Value string `json:"value"`
 }
 
 // Exporter collects PowerDNS stats from the given HostURL and exports them using
@@ -192,9 +189,8 @@ func (e *Exporter) scrape(jsonStats chan<- []StatsEntry) {
 
 	e.totalScrapes.Inc()
 
-	var data []StatsEntry
-	url := apiURL(e.HostURL, apiStatsEndpoint)
-	err := getJSON(url, e.ApiKey, &data)
+	scrapeURL := newURL(e.HostURL, apiStatsEndpoint)
+	data, err := getJSON(scrapeURL, e.ApiKey)
 	if err != nil {
 		e.up.Set(0)
 		e.jsonParseFailures.Inc()
@@ -202,9 +198,12 @@ func (e *Exporter) scrape(jsonStats chan<- []StatsEntry) {
 		return
 	}
 
+	var statsEntry []StatsEntry
+	err = mapstructure.Decode(data, &statsEntry)
+
 	e.up.Set(1)
 
-	jsonStats <- data
+	jsonStats <- statsEntry
 }
 
 func (e *Exporter) resetMetrics() {
@@ -235,7 +234,12 @@ func (e *Exporter) setMetrics(jsonStats <-chan []StatsEntry) (statsMap map[strin
 	statsMap = make(map[string]float64)
 	stats := <-jsonStats
 	for _, s := range stats {
-		statsMap[s.Name] = s.Value
+		value, err := strconv.ParseFloat(s.Value, 64)
+		if err != nil {
+			continue
+			//log.Error(fmt.Sprintf("Unable to parse float: %+v", s))
+		}
+		statsMap[s.Name] = value
 	}
 	if len(statsMap) == 0 {
 		return
@@ -257,7 +261,7 @@ func (e *Exporter) setMetrics(jsonStats <-chan []StatsEntry) (statsMap map[strin
 	for _, def := range e.counterVecDefs {
 		for key, label := range def.labelMap {
 			if value, ok := statsMap[key]; ok {
-				e.counterVecMetrics[def.id].WithLabelValues(label).Set(value)
+				e.counterVecMetrics[def.id].WithLabelValues(label).Add(value)
 			} else {
 				log.Errorf("Expected PowerDNS stats key not found: %s", key)
 				e.jsonParseFailures.Inc()
@@ -267,65 +271,66 @@ func (e *Exporter) setMetrics(jsonStats <-chan []StatsEntry) (statsMap map[strin
 	return
 }
 
-func getServerInfo(hostURL *url.URL, apiKey string) (*ServerInfo, error) {
-	var info ServerInfo
-	url := apiURL(hostURL, apiInfoEndpoint)
-	err := getJSON(url, apiKey, &info)
+func getServerInfo(hostURL *url.URL, apiKey string) (info ServerInfo, err error) {
+	serverInfoURL := newURL(hostURL, apiInfoEndpoint)
+	data, err := getJSON(serverInfoURL, apiKey)
 	if err != nil {
-		return nil, err
+		return
 	}
 
-	return &info, nil
+	err = mapstructure.Decode(data, &info)
+
+	return
 }
 
-func getJSON(url, apiKey string, data interface{}) error {
-	req, err := http.NewRequest("GET", url, nil)
+func getJSON(url, apiKey string) (data interface{}, err error) {
+	req, err := retryablehttp.NewRequest("GET", url, nil)
 	if err != nil {
-		return err
+		return
 	}
 
 	req.Header.Add("X-API-Key", apiKey)
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return err
+		return
 	}
 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		content, err := ioutil.ReadAll(resp.Body)
+		var content []byte
+		content, err = ioutil.ReadAll(resp.Body)
 		if err != nil {
-			return err
+			return
 		}
-		return fmt.Errorf(string(content))
+
+		err = fmt.Errorf(string(content))
+		return
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(data); err != nil {
-		return err
+	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return
 	}
 
-	return nil
+	return
 }
 
-func apiURL(hostURL *url.URL, path string) string {
+func newURL(hostURL *url.URL, path string) string {
 	endpointURI, _ := url.Parse(path)
 	u := hostURL.ResolveReference(endpointURI)
 	return u.String()
 }
 
 func main() {
-	var (
-		listenAddress = flag.String("listen-address", ":9120", "Address to listen on for web interface and telemetry.")
-		metricsPath   = flag.String("metric-path", "/metrics", "Path under which to expose metrics.")
-		apiURL        = flag.String("api-url", "http://localhost:8001/", "Base-URL of PowerDNS authoritative server/recursor API.")
-		apiKey        = flag.String("api-key", "", "PowerDNS API Key")
-	)
+	var ()
 	flag.Parse()
 
 	hostURL, err := url.Parse(*apiURL)
 	if err != nil {
 		log.Fatalf("Error parsing api-url: %v", err)
 	}
+
+	httpClient = retryablehttp.NewClient()
 
 	server, err := getServerInfo(hostURL, *apiKey)
 	if err != nil {
@@ -336,7 +341,7 @@ func main() {
 	prometheus.MustRegister(exporter)
 
 	log.Infof("Starting Server: %s", *listenAddress)
-	http.Handle(*metricsPath, prometheus.Handler())
+	http.Handle(*metricsPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
              <head><title>PowerDNS Exporter</title></head>

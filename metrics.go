@@ -17,29 +17,29 @@ type gaugeDefinition struct {
 
 // Used to programmatically create prometheus.CounterVec metrics
 type counterVecDefinition struct {
-	id       int
-	name     string
-	desc     string
-	label    string
+	id    int
+	name  string
+	desc  string
+	label string
 	// Maps PowerDNS stats names to Prometheus label value
 	labelMap map[string]string
 }
 
 var (
 	rTimeBucketMap = map[string]float64{
-		"answers0-1":       .001,
-		"answers1-10":      .01,
-		"answers10-100":    .1,
-		"answers100-1000":  1,
-		"answers-slow":     0,
+		"answers0-1":      .001,
+		"answers1-10":     .01,
+		"answers10-100":   .1,
+		"answers100-1000": 1,
+		"answers-slow":    0,
 	}
 
 	rTimeLabelMap = map[string]string{
-		"answers0-1":       "0-1ms",
-		"answers1-10":      "1-10ms",
-		"answers10-100":    "10-100ms",
-		"answers100-1000":  "100-1000ms",
-		"answers-slow":     ">1000ms",
+		"answers0-1":      "0-1ms",
+		"answers1-10":     "1-10ms",
+		"answers10-100":   "10-100ms",
+		"answers100-1000": "100-1000ms",
+		"answers-slow":    ">1000ms",
 	}
 
 	rCodeLabelMap = map[string]string{
@@ -95,32 +95,79 @@ var (
 	}
 	authoritativeCounterVecDefs = []counterVecDefinition{
 		counterVecDefinition{
-			1, "queries_total", "Total number of queries by network.", "net",
-			map[string]string{"tcp-queries": "tcp", "udp-queries": "udp"},
+			1,
+			"queries_total",
+			"Total number of queries by network.",
+			"net",
+			map[string]string{
+				"tcp-queries": "tcp",
+				"udp-queries": "udp",
+			},
 		},
 		counterVecDefinition{
-			2, "answers_total", "Total number of answers by network.", "net",
-			map[string]string{"tcp-answers": "tcp", "udp-answers": "udp"},
+			2,
+			"answers_total",
+			"Total number of answers by network.",
+			"net",
+			map[string]string{
+				"tcp-answers": "tcp",
+				"udp-answers": "udp",
+			},
 		},
 		counterVecDefinition{
-			3, "recursive_queries_total", "Total number of recursive queries by status.", "status",
-			map[string]string{"rd-queries": "requested", "recursing-questions": "processed", "recursing-answers": "answered", "recursion-unanswered": "unanswered"},
+			3,
+			"recursive_queries_total",
+			"Total number of recursive queries by status.",
+			"status",
+			map[string]string{
+				"rd-queries": "requested",
+				"recursing-questions": "processed",
+				"recursing-answers": "answered",
+				"recursion-unanswered": "unanswered",
+			},
 		},
 		counterVecDefinition{
-			4, "update_queries_total", "Total number of DNS update queries by status.", "status",
-			map[string]string{"dnsupdate-answers": "answered", "dnsupdate-changes": "applied", "dnsupdate-queries": "requested", "dnsupdate-refused": "refused"},
+			4,
+			"update_queries_total",
+			"Total number of DNS update queries by status.",
+			"status",
+			map[string]string{
+				"dnsupdate-answers": "answered",
+				"dnsupdate-changes": "applied",
+				"dnsupdate-queries": "requested",
+				"dnsupdate-refused": "refused",
+			},
 		},
 		counterVecDefinition{
-			5, "packet_cache_lookups_total", "Total number of packet-cache lookups by result.", "result",
-			map[string]string{"packetcache-hit": "hit", "packetcache-miss": "miss"},
+			5,
+			"packet_cache_lookups_total",
+			"Total number of packet-cache lookups by result.",
+			"result",
+			map[string]string{
+				"packetcache-hit": "hit",
+				"packetcache-miss": "miss",
+			},
 		},
 		counterVecDefinition{
-			6, "query_cache_lookups_total", "Total number of query-cache lookups by result.", "result",
-			map[string]string{"query-cache-hit": "hit", "query-cache-miss": "miss"},
+			6,
+			"query_cache_lookups_total",
+			"Total number of query-cache lookups by result.",
+			"result",
+			map[string]string{
+				"query-cache-hit": "hit",
+				"query-cache-miss": "miss",
+			},
 		},
 		counterVecDefinition{
-			7, "exceptions_total", "Total number of exceptions by error.", "error",
-			map[string]string{"servfail-packets": "servfail", "timedout-questions": "timeout", "udp-recvbuf-errors": "recvbuf-error", "udp-sndbuf-errors": "sndbuf-error"},
+			7,
+			"exceptions_total",
+			"Total number of exceptions by error.",
+			"error",
+			map[string]string{
+				"servfail-packets": "servfail",
+				"udp-recvbuf-errors": "recvbuf-error",
+				"udp-sndbuf-errors": "sndbuf-error",
+			},
 		},
 	}
 )
@@ -160,7 +207,7 @@ func makeRecursorRTimeHistogram(statsMap map[string]float64) (prometheus.Metric,
 	}
 
 	desc := prometheus.NewDesc(
-		namespace + "_recursor_response_time_seconds",
+		namespace+"_recursor_response_time_seconds",
 		"Histogram of PowerDNS recursor response times in seconds.",
 		[]string{},
 		prometheus.Labels{},
